@@ -242,8 +242,8 @@ def pdfizer(text):
     """
     # 1. Parse the text
     parsed_structure = parse_text_to_structure(text)
-    print("Parsed Structure:")
-    pprint(parsed_structure)
+    # print("Parsed Structure:")
+    # pprint(parsed_structure)
     
     # 2. Create table data
     table_data = create_table_data(parsed_structure)
