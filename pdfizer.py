@@ -1,11 +1,12 @@
 import re
 from pprint import pprint
+from io import BytesIO
+
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_LEFT
-
 
 def parse_text_to_structure(data):
     """
@@ -19,7 +20,7 @@ def parse_text_to_structure(data):
         list: A list of dictionaries representing the structured data.
     """
     import re
-    data = re.sub("Score:.*", "", data, flags=re.DOTALL) 
+    data = re.sub("Score:.*", "", data, flags=re.DOTALL)
     data = re.sub(r"\s+\-", "\n&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;-&nbsp;", data)
     data = re.sub(r"Sentence\s*\d+:\s*", "&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;-&nbsp;", data)
     data = re.sub(r"\n\nTranscription\(s\):", "<br/>", data, flags=re.DOTALL)
@@ -34,7 +35,7 @@ def parse_text_to_structure(data):
     current_main = None
     current_subsection = None
     
-    # Split the input data into lines
+    # Split the input data into lines (do not strip them, to preserve indentation/format)
     lines = data.splitlines()
     
     for line_num, line in enumerate(lines, start=1):
@@ -48,12 +49,9 @@ def parse_text_to_structure(data):
             main_number = main_match.group(1)
             main_text = main_match.group(2)
             # Check if this main section already exists
-            if any(section['number'] == main_number for section in structured_data):
-                # If exists, set current_main to existing
-                for section in structured_data:
-                    if section['number'] == main_number:
-                        current_main = section
-                        break
+            existing_main = next((section for section in structured_data if section['number'] == main_number), None)
+            if existing_main:
+                current_main = existing_main
             else:
                 # Create a new main section entry
                 current_main = {
@@ -73,11 +71,11 @@ def parse_text_to_structure(data):
             # Check if this subsection already exists
             existing_sub = next((sub for sub in current_main['subsections'] if sub['number'] == sub_number), None)
             if existing_sub:
-                # If exists, append the content
+                # Append content to existing subsection
                 existing_sub['text'] += f'\n{sub_text}'
                 current_subsection = existing_sub
             else:
-                # Create a new subsection entry
+                # Create a new subsection
                 current_subsection = {
                     'number': sub_number,
                     'text': sub_text
@@ -85,15 +83,12 @@ def parse_text_to_structure(data):
                 current_main['subsections'].append(current_subsection)
             continue
         
-        # If the line doesn't match any pattern, append it to the current subsection or main section
+        # If the line doesn't match main or subsection, append it to the current subsection or main section
         if current_subsection:
-            # Append to the current subsection's text with a newline
             current_subsection['text'] += f'\n{stripped_line}'
         elif current_main:
-            # Append to the main section's text with a newline
             current_main['text'] += f'\n{stripped_line}'
         else:
-            # If no current section, issue a warning
             print(f"Warning: Line {line_num} is outside of any section or subsection: {stripped_line}")
     
     return structured_data
@@ -108,37 +103,50 @@ def create_table_data(structured_data):
     Returns:
         list: Table data suitable for ReportLab's Table.
     """
+    import re
+    
     table_data = []
     
     for section in structured_data:
-        # Create header row
+        # Create a 'header row'
         header_text = f"{section['number']} {section['text']}".replace('\n', '<br/>')
         header_para = Paragraph(header_text, header_para_style)
         table_data.append([header_para])
         
+        # Now process each subsection
         for subsection in section['subsections']:
             content_text = f"{subsection['number']} {subsection['text']}"
+            # Optional: bold any "Xyz:" lines
             pattern = r'^(.*?:.*)$'
             content_text = re.sub(pattern, r'<b>\1</b>', content_text, flags=re.MULTILINE | re.IGNORECASE)
+            # Replace newlines with <br/> for multiline rendering
             content_text = content_text.replace('\n', '<br/>')
+            # Add extra spacing
             content_text = f"<br/>{content_text}<br/><br/>"
+            
             content_para = Paragraph(content_text, content_para_style)
             table_data.append([content_para])
     
     return table_data
 
-def generate_pdf(table_data, table_style, filename="styled_single_column_table.pdf"):
+def generate_pdf_in_memory(table_data, table_style):
     """
-    Generates a PDF with a simple header and the given table data and styles.
+    Generates a PDF with a simple header and the given table data and styles, returning PDF bytes.
     
     Args:
-        table_data (list): Data for the table.
+        table_data (list): Data for the table (list of lists).
         table_style (TableStyle): Styles to apply to the table.
-        filename (str): Output PDF filename.
+    
+    Returns:
+        bytes: The generated PDF in bytes.
     """
-    # Create a PDF document
+    from reportlab.platypus import SimpleDocTemplate, Table
+    
+    buffer = BytesIO()
+    
+    # Create a PDF document in memory
     pdf = SimpleDocTemplate(
-        filename,
+        buffer,
         pagesize=letter,
         rightMargin=72,
         leftMargin=72,
@@ -149,17 +157,15 @@ def generate_pdf(table_data, table_style, filename="styled_single_column_table.p
     
     # Define styles
     styles = getSampleStyleSheet()
-    
-    # Custom style for the header
     header_style = ParagraphStyle(
         name='HeaderStyle',
         parent=styles['Title'],  # Inherits from 'Title' style
-        fontName='Helvetica-Bold',  # Bold font
-        fontSize=10,  # Larger font size
-        leading=22,  # Space between lines
-        alignment=1,  # Center alignment
-        spaceAfter=20,  # Space after the header
-        textColor=colors.gray  # Header text color
+        fontName='Helvetica-Bold',
+        fontSize=10,
+        leading=22,
+        alignment=1,  # Center
+        spaceAfter=20,
+        textColor=colors.gray
     )
     
     # Create the header Paragraph
@@ -167,17 +173,22 @@ def generate_pdf(table_data, table_style, filename="styled_single_column_table.p
     header = Paragraph(header_text, header_style)
     elements.append(header)
     
-    # Create the table
-    table = Table(table_data, colWidths=[500])
-    table.setStyle(table_style)
+    # Create the table (single column width 500)
+    tbl = Table(table_data, colWidths=[500])
+    tbl.setStyle(table_style)
     
     # Add the table to the elements
-    elements.append(table)
-        
+    elements.append(tbl)
+    
     # Build the PDF
     pdf.build(elements)
+    
+    # Retrieve the PDF bytes
+    pdf_bytes = buffer.getvalue()
+    buffer.close()
+    return pdf_bytes
 
-# Initialize ReportLab styles
+# -- Initialize ReportLab styles --
 styles = getSampleStyleSheet()
 
 # Define a style for header rows
@@ -220,26 +231,35 @@ table_style = TableStyle([
 header_background = colors.Color(0/255, 51/255, 102/255)  # RGB (0, 51, 102)
 
 def pdfizer(text):
-    # Parse the text
+    """
+    Generates the PDF in-memory (returns bytes).
+    
+    Args:
+        text (str): The raw input text to be parsed and converted into a PDF.
+    
+    Returns:
+        bytes: The PDF bytes, suitable for downloading or further processing.
+    """
+    # 1. Parse the text
     parsed_structure = parse_text_to_structure(text)
-
-    # Display the parsed structure for verification
     print("Parsed Structure:")
     pprint(parsed_structure)
-
-    # Create table data
+    
+    # 2. Create table data
     table_data = create_table_data(parsed_structure)
-
-    # Iterate through table data and apply background colors
+    
+    # 3. Style the rows (header vs. default)
+    #    We detect header rows by checking the 'HeaderStyle' in the Paragraph
     for idx, row in enumerate(table_data):
-        if 'HeaderStyle' in row[0].style.name:
-            # Apply header background
-            table_style.add('BACKGROUND', (0, idx), (-1, idx), header_background)
-        else:
-            # Apply default background
-            table_style.add('BACKGROUND', (0, idx), (-1, idx), colors.white)
-
-    # Generate the PDF
-    generate_pdf(table_data, table_style, "styled_single_column_table.pdf")
-
-    print("\nPDF 'styled_single_column_table.pdf' has been generated successfully.")
+        if row and len(row) > 0:
+            # Check if 'HeaderStyle' is in the Paragraph style name
+            if 'HeaderStyle' in row[0].style.name:
+                table_style.add('BACKGROUND', (0, idx), (-1, idx), header_background)
+            else:
+                table_style.add('BACKGROUND', (0, idx), (-1, idx), colors.white)
+    
+    # 4. Generate PDF in memory
+    pdf_bytes = generate_pdf_in_memory(table_data, table_style)
+    
+    print("\nPDF was generated in memory successfully.")
+    return pdf_bytes
