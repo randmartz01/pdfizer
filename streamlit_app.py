@@ -10,7 +10,7 @@ st.write(
 )
 
 text_input = st.text_area(
-    "📋 Enter Your Structured Text Here:",
+    "📋 Enter Your QA Output here:",
     height=300)
 
 # Button to generate PDF
